@@ -1,21 +1,31 @@
 "use strict";
 
+function createTerm(obj, toString, evaluate, diff) {
+    obj.prototype.toString = toString;
+    obj.prototype.evaluate = evaluate;
+    obj.prototype.diff = diff;
+}
+
+
 function Const(value) {
     this.value = value;
 }
-Const.prototype.toString = function () {
-    return "" + this.value;
-};
-Const.prototype.evaluate = function () {
-    return +this.value;
-};
-Const.prototype.diff = function () {
-    return new Const(0);
-};
+
 const CONSTS = {
     0: new Const(0),
     1: new Const(1)
 };
+
+createTerm(Const,
+    function () {
+        return "" + this.value;
+    },
+    function () {
+        return +this.value;
+    },
+    () => CONSTS[0]
+);
+
 
 const VARS = {
     "x": 0,
@@ -28,108 +38,95 @@ function Variable(variableName) {
     this.argIndex = VARS[variableName];
 }
 
-Variable.prototype.toString = function () {
-    return this.variableName;
-};
-Variable.prototype.evaluate = function (...args) {
-    return args[this.argIndex];
-};
-Variable.prototype.diff = function (diffVariable) {
-    return this.variableName === diffVariable ? CONSTS[1] : CONSTS[0];
-};
+createTerm(Variable,
+    function () {
+        return this.variableName;
+    },
+    function (...args) {
+        return args[this.argIndex];
+    },
+    function (diffVariable) {
+        return this.variableName === diffVariable ? CONSTS[1] : CONSTS[0];
+    }
+);
 
-function Operation(operand, operation, ...args) {
-    this.operand = operand;
-    this.operation = operation;
+function Operation(...args) {
     this.args = args;
 }
 
-Operation.prototype.evaluate = function (...params) {
-    return this.operation(...this.args.map(f => f.evaluate(...params)));
-};
-Operation.prototype.toString = function () {
-    return this.args.map(f => f.toString()).join(" ") + " " + this.operand;
-};
+createTerm(Operation,
+    function () {
+        return this.args.map(f => f.toString()).join(" ") + " " + this.operand;
+    },
+    function (...params) {
+        return this.operation(...this.args.map(f => f.evaluate(...params)));
+    },
+    function (diffVariable) {
+        return this.diffFunction(diffVariable, ...this.args)
+    }
+)
 
-function Negate(x) {
-    Operation.call(this, "negate", (a) => -a, x);
+function createOperation(operand, operation, diffFunction) {
+    const obj = function (...args) {
+        Operation.call(this, ...args);
+    };
+    obj.prototype = Object.create(Operation.prototype);
+    obj.prototype.operand = operand;
+    obj.prototype.operation = operation;
+    obj.prototype.diffFunction = diffFunction;
+    obj.nargs = operation.length;
+    return obj;
 }
 
-Negate.prototype = Object.create(Operation.prototype);
-Negate.prototype.diff = function (diffVariable) {
-    return new Negate(this.args[0].diff(diffVariable));
-};
+const Negate = createOperation("negate", a => -a,
+    function (diffVariable, a) {
+        return new Negate(a.diff(diffVariable));
+    });
 
-function Add(x, y) {
-    Operation.call(this, "+", (a, b) => a + b, x, y);
-}
+const Add = createOperation("+", (a, b) => a + b,
+    (diffVariable, a, b) => new Add(a.diff(diffVariable), b.diff(diffVariable)), 2);
 
-Add.prototype = Object.create(Operation.prototype);
-Add.prototype.diff = function (diffVariable) {
-    return new Add(...this.args.map(arg => arg.diff(diffVariable)));
-};
 
-function Subtract(x, y) {
-    Operation.call(this, "-", (a, b) => a - b, x, y);
-}
+const Subtract = createOperation("-", (a, b) => a - b,
+    (diffVariable, a, b) => new Subtract(a.diff(diffVariable), b.diff(diffVariable)), 2);
 
-Subtract.prototype = Object.create(Operation.prototype);
-Subtract.prototype.diff = function (diffVariable) {
-    return new Subtract(...this.args.map(arg => arg.diff(diffVariable)));
-};
+const Multiply = createOperation("*", (a, b) => a * b,
+    (diffVariable, a, b) => new Add(
+        new Multiply(a.diff(diffVariable), b),
+        new Multiply(a, b.diff(diffVariable))
+    ));
 
-function Multiply(x, y) {
-    Operation.call(this, "*", (a, b) => a * b, x, y);
-}
 
-Multiply.prototype = Object.create(Operation.prototype);
-Multiply.prototype.diff = function (diffVariable) {
-    return new Add(
-        new Multiply(this.args[0].diff(diffVariable), this.args[1]),
-        new Multiply(this.args[0], this.args[1].diff(diffVariable))
-    );
-};
-
-function Divide(x, y) {
-    Operation.call(this, "/", (a, b) => a / b, x, y);
-}
-
-Divide.prototype = Object.create(Operation.prototype);
-Divide.prototype.diff = function (diffVariable) {
-    return new Divide(
+const Divide = createOperation("/", (a, b) => a / b,
+    (diffVariable, a, b) => new Divide(
         new Subtract(
-            new Multiply(this.args[0].diff(diffVariable), this.args[1]),
-            new Multiply(this.args[0], this.args[1].diff(diffVariable))
+            new Multiply(a.diff(diffVariable), b),
+            new Multiply(a, b.diff(diffVariable))
         ),
-        new Multiply(this.args[1], this.args[1]));
-};
+        new Multiply(b, b)));
 
-function Gauss(a, b, c, x) {
-    Operation.call(this, "gauss", (a, b, c, x) => a * Math.exp(-(x - b) * (x - b) / c / c / 2),
-        a, b, c, x);
-}
-
-Gauss.prototype = Object.create(Operation.prototype);
-Gauss.prototype.diff = function (diffVariable) {
-    return new Add(
-        new Gauss(this.args[0].diff(diffVariable), this.args[1], this.args[2], this.args[3]),
-        new Multiply(new Gauss(this.args[0], this.args[1], this.args[2], this.args[3]),
-            new Negate(new Divide(
-                new Multiply(
-                    new Subtract(this.args[3], this.args[1]),
-                    new Subtract(this.args[3], this.args[1])
-                ),
-                new Multiply(
-                    new Const(2),
+const Gauss = createOperation("gauss", (a, b, c, x) => a * Math.exp(-(x - b) * (x - b) / c / c / 2),
+    (diffVariable, a, b, c, x) => {
+        const substr = new Subtract(x, b);
+        return new Add(
+            new Gauss(a.diff(diffVariable), b, c, x),
+            new Multiply(new Gauss(a, b, c, x),
+                new Negate(new Divide(
                     new Multiply(
-                        this.args[2],
-                        this.args[2]
+                        substr,
+                        substr
+                    ),
+                    new Multiply(
+                        new Const(2),
+                        new Multiply(
+                            c,
+                            c
+                        )
                     )
-                )
-            )).diff(diffVariable)
+                )).diff(diffVariable)
+            )
         )
-    )
-};
+    });
 
 const OPERATIONS = {
     "+": Add,
@@ -145,7 +142,7 @@ function parse(expression) {
     expression.split(" ").filter(x => x.length > 0).forEach(token => {
         if (token in OPERATIONS) {
             const curOperation = OPERATIONS[token];
-            stack.push(new curOperation(...stack.splice(-curOperation.length)));
+            stack.push(new curOperation(...stack.splice(-curOperation.nargs)));
         } else if (token in VARS) {
             stack.push(new Variable(token));
         } else {
