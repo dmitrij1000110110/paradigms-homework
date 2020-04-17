@@ -1,6 +1,6 @@
 "use strict";
 
-function createTerm(obj, toString, prefix, postfix, evaluate, diff) {
+function createTerm(obj, toString, evaluate, diff, prefix = toString, postfix = toString) {
     obj.prototype.toString = toString;
     obj.prototype.prefix = prefix;
     obj.prototype.postfix = postfix;
@@ -17,12 +17,6 @@ Const.ONE = new Const(1);
 Const.TWO = new Const(2);
 
 createTerm(Const,
-    function () {
-        return "" + this.value;
-    },
-    function () {
-        return "" + this.value;
-    },
     function () {
         return "" + this.value;
     },
@@ -48,12 +42,6 @@ createTerm(Variable,
     function () {
         return this.variableName;
     },
-    function () {
-        return this.variableName;
-    },
-    function () {
-        return this.variableName;
-    },
     function (...args) {
         return args[this.argIndex];
     },
@@ -70,19 +58,19 @@ createTerm(Operation,
     function () {
         return this.args.join(" ") + " " + this.operand;
     },
-    function () {
-        return "(" + this.operand + " " + this.args.map(f => f.prefix()).join(" ") + ")";
-    },
-    function () {
-        return "(" + this.args.map(f => f.postfix()).join(" ") + " " + this.operand + ")";
-    },
     function (...params) {
         return this.operation(...this.args.map(f => f.evaluate(...params)));
     },
     function (v) {
         return this.diffFunction(v, ...this.args)
+    },
+    function () {
+        return "(" + this.operand + " " + this.args.map(f => f.prefix()).join(" ") + ")";
+    },
+    function () {
+        return "(" + this.args.map(f => f.postfix()).join(" ") + " " + this.operand + ")";
     }
-)
+);
 
 function createOperation(operand, operation, diffFunction) {
     function Obj(...args) {
@@ -207,7 +195,7 @@ function ParsingError(message) {
 }
 
 ParsingError.prototype = Object.create(Error.prototype);
-ParsingError.prototype.name = "ParsingError"
+ParsingError.prototype.name = "ParsingError";
 ParsingError.prototype.constructor = ParsingError;
 
 function createParsingError(name, buildMessage) {
@@ -223,11 +211,6 @@ function createParsingError(name, buildMessage) {
 
 const MissingBracketError = createParsingError("MissingBracketError",
     (pos, foundToken) => "Expected ) at pos " + pos + " but found " + foundToken);
-// try {
-//     throw new MissingBracketError("0", "test");
-// } catch (e) {
-//     console.log(e instanceof MissingBracketError);
-// }
 const IncorrectOperationError = createParsingError("IncorrectOperationError",
     (pos, foundToken) => "Invalid operation token at pos " + pos + ", found '" + foundToken + "'");
 const UnexpectedArgsCount = createParsingError("UnexpectedArgsCount",
@@ -237,14 +220,12 @@ const UnexpectedTokenError = createParsingError("UnexpectedTokenError",
     (pos, foundToken) => "Unexpected token '" + foundToken + "' at pos " + pos);
 
 
-function BaseParser(source, separators = [], mode = s => s) {
+function BaseParser(source, separators = []) {
     let _pos = 0;
-    source = mode(source);
     this.getPos = () => _pos;
-    this.incPos = () => _pos++;
-    this.getMode = () => mode;
+    this.incPos = (n = 1) => _pos += n;
     this.getNext = (n = 1) => {
-        return mode(source.slice(_pos, _pos += n));
+        return source.slice(_pos, _pos += n);
     };
     this.getSource = () => source;
     this.isSeparator = (c) => separators.includes(c);
@@ -252,15 +233,14 @@ function BaseParser(source, separators = [], mode = s => s) {
 
 BaseParser.prototype.hasNext = function (n = 1) {
     return this.getPos() + n <= this.getSource().length;
-}
+};
 BaseParser.prototype.skipWhitespaces = function () {
     const source = this.getSource();
     while (this.getPos() < source.length && source[this.getPos()].trim() === "") {
         this.incPos();
     }
-}
+};
 BaseParser.prototype.test = function (expectedToken) {
-    expectedToken = this.getMode()(expectedToken);
     this.skipWhitespaces();
     const source = this.getSource();
     const pos = this.getPos();
@@ -272,7 +252,7 @@ BaseParser.prototype.test = function (expectedToken) {
         ans = ans && (expectedToken[i] === source[pos + i]);
     }
     return ans;
-}
+};
 BaseParser.prototype.parseToken = function () {
     this.skipWhitespaces();
     let token = "";
@@ -284,21 +264,24 @@ BaseParser.prototype.parseToken = function () {
             token += this.getNext();
         }
     }
-    return this.getMode()(token);
-}
+    return token;
+};
+BaseParser.prototype.viewToken = function () {
+    let token = this.parseToken();
+    this.incPos(-token.length);
+    return token;
+};
+
 
 function parseExpression(expression, mode) {
-    const parser = new BaseParser(expression.trim(), [" ", "(", ")"],
-        mode === "prefix" ? (s => s) : (s => s.split("").reverse().join("")));
-    const openBracket = mode === "prefix" ? "(" : ")";
-    const closeBracket = mode === "prefix" ? ")" : "(";
+    const parser = new BaseParser(expression.trim(), [" ", "(", ")"]);
 
     function parseArgument(token) {
         let result;
-        if (token === openBracket) {
+        if (token === "(") {
             result = parseExpression();
             token = parser.parseToken();
-            if (token !== closeBracket) {
+            if (token !== ")") {
                 throw new MissingBracketError(parser.getPos(), token);
             }
         } else if (token in VARS) {
@@ -311,22 +294,37 @@ function parseExpression(expression, mode) {
         return result;
     }
 
-    function parseExpression() {
-        let token = parser.parseToken();
+    function parseArgs() {
+        let operationArgs = [];
+        while (parser.hasNext() && !parser.test(")") && !(parser.viewToken() in OPERATIONS)) {
+            operationArgs.push(parseArgument(parser.parseToken()))
+        }
+        return operationArgs;
+    }
+
+    function parseOperation() {
+        const token = parser.parseToken();
         if (!(token in OPERATIONS)) {
             throw new IncorrectOperationError(parser.getPos(), token);
         }
-        const curOperation = OPERATIONS[token];
-        let operationArgs = [];
-        while (parser.hasNext() && !parser.test(closeBracket)) {
-            token = parser.parseToken();
-            operationArgs.push(parseArgument(token))
+        return OPERATIONS[token];
+    }
+
+    function parseExpression() {
+        let operationArgs, curOperation;
+        if (mode === "prefix") {
+            curOperation = parseOperation();
+            operationArgs = parseArgs();
+        } else {
+            operationArgs = parseArgs();
+            curOperation = parseOperation();
         }
-        if (curOperation.prototype.operation.length !== 0 && operationArgs.length !== curOperation.prototype.operation.length) {
+        const argsLen = curOperation.prototype.operation.length;
+        if (argsLen !== 0 && operationArgs.length !== argsLen) {
             throw new UnexpectedArgsCount(parser.getPos(), curOperation.prototype.operand,
-                operationArgs.length, curOperation.prototype.operation.length);
+                operationArgs.length, argsLen);
         }
-        return new curOperation(...(mode === "prefix" ? operationArgs : operationArgs.reverse()));
+        return new curOperation(...operationArgs);
     }
 
     function parse() {
@@ -346,13 +344,3 @@ function parseExpression(expression, mode) {
 
 const parsePrefix = (expression) => parseExpression(expression, "prefix");
 const parsePostfix = (expression) => parseExpression(expression, "postfix");
-
-
-// test program
-// const testExpr = parsePostfix("(x 2 +)");
-// console.log(testExpr.postfix());
-// console.log(testExpr.operand);
-// console.log(testExpr);
-// for (let i = 0; i < 11; i++) {
-//     console.log(testExpr.evaluate(i, 0, 0));
-// }
