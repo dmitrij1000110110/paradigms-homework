@@ -93,23 +93,24 @@
                                 (m*v m b)))))
 
 ; Broadcast
-(defn equal-size-tensor-of-number [a b]
+(defn equal-size-tensor-of-number? [a b]
   (or (and (number? a)
            (number? b))
       (equal-size-vector-of-number? a b)
       (and
         (equal-size-collection-of-type? vector-of-type? vector? a b)
-        (every? true? (mapv equal-size-tensor-of-number a b)))
+        (every? true? (mapv equal-size-tensor-of-number? a b)))
       ))
 
-(defn is-suffix? [x y]                                      ; is y dimensions suffix of x
-  (or (equal-size-tensor-of-number x y)
+(defn is-suffix? [x y]                                      ; is y dimensions suffix of x?
+  (or (equal-size-tensor-of-number? x y)
       (and (vector? x)
            (is-suffix? (first x) y))))
 
-(defn broadcast [x y]
-  {:pre [(is-suffix? x y)]}
-  (if (equal-size-tensor-of-number x y) y (mapv #(broadcast % y) x))) ; broadcast y to x
+(defn broadcast [x y]                                       ; broadcast y to x
+  {:pre  [(is-suffix? x y)]
+   :post [(equal-size-tensor-of-number? % x)]}
+  (if (equal-size-tensor-of-number? x y) y (mapv #(broadcast % y) x)))
 
 (defn reduce-tensor [fun neutral] (fn [& vectors] (if (== 1 (count vectors))
                                                     (fun neutral (first vectors))
